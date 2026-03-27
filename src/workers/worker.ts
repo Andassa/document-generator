@@ -5,12 +5,15 @@ import { pdfQueue } from '../queue/pdfQueue';
 import { DocumentModel } from '../models/document.model';
 import { BatchModel } from '../models/batch.model';
 import type { PdfJobPayload } from '../types/pdf';
+import { verifySimulatedDocuSignEnvelope } from '../services/docusignSimulated.service';
 import { streamPdfFromWorkerToGridFS } from '../services/pdfRunner.service';
 import { createChildLogger } from '../utils/logger';
 import {
   pdfJobsProcessedTotal,
   pdfJobDurationSeconds,
   activeBullJobs,
+  documentsGeneratedTotal,
+  batchProcessingDurationSeconds,
 } from '../utils/metrics';
 
 async function refreshBatchStatus(batchId: mongoose.Types.ObjectId): Promise<void> {
@@ -25,7 +28,16 @@ async function refreshBatchStatus(batchId: mongoose.Types.ObjectId): Promise<voi
   const allOk = docs.every((d) => d.status === 'completed');
   const allFail = docs.every((d) => d.status === 'failed');
   const nextStatus = allOk ? 'completed' : allFail ? 'failed' : 'partial';
-  await BatchModel.findByIdAndUpdate(batchId, { status: nextStatus }).exec();
+
+  const prev = await BatchModel.findOneAndUpdate(
+    { _id: batchId, status: { $nin: ['completed', 'failed', 'partial'] } },
+    { $set: { status: nextStatus } },
+  ).exec();
+
+  if (prev?.createdAt) {
+    const elapsedSec = (Date.now() - prev.createdAt.getTime()) / 1000;
+    batchProcessingDurationSeconds.observe({ outcome: nextStatus }, elapsedSec);
+  }
 }
 
 export function registerPdfWorkerProcessor(): void {
@@ -35,16 +47,17 @@ export function registerPdfWorkerProcessor(): void {
     async (job: Job<PdfJobPayload>) => {
       const started = process.hrtime.bigint();
       activeBullJobs.inc();
-      const logger = createChildLogger(job.data.correlationId);
+      const logger = createChildLogger(job.data.correlationId, {
+        batchId: job.data.batchId,
+        documentId: job.data.documentId,
+      });
       let outcome: 'success' | 'failure' = 'failure';
       try {
-        logger.info('Traitement job PDF', {
-          jobId: String(job.id),
-          documentId: job.data.documentId,
-        });
+        logger.info('Traitement job PDF', { jobId: String(job.id) });
         await DocumentModel.findByIdAndUpdate(job.data.documentId, {
           status: 'processing',
         }).exec();
+        await verifySimulatedDocuSignEnvelope();
         const fileId = await streamPdfFromWorkerToGridFS(job.data, logger);
         await DocumentModel.findByIdAndUpdate(job.data.documentId, {
           status: 'completed',
@@ -54,7 +67,8 @@ export function registerPdfWorkerProcessor(): void {
         await refreshBatchStatus(new mongoose.Types.ObjectId(job.data.batchId));
         outcome = 'success';
         pdfJobsProcessedTotal.inc({ status: 'success' });
-        logger.info('Job PDF terminé', { jobId: String(job.id), documentId: job.data.documentId });
+        documentsGeneratedTotal.inc();
+        logger.info('Job PDF terminé', { jobId: String(job.id) });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         logger.error('Échec job PDF', { jobId: String(job.id), err: message });

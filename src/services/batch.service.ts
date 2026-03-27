@@ -33,26 +33,14 @@ export async function createBatch(
       if (!b) {
         throw new Error('Création de lot impossible');
       }
-      const docIds: mongoose.Types.ObjectId[] = [];
-      for (let i = 0; i < documents.length; i++) {
-        const d = documents[i];
-        const doc = await DocumentModel.create(
-          [
-            {
-              batchId: b._id,
-              title: d.title,
-              content: d.content,
-              status: 'pending',
-            },
-          ],
-          { session },
-        );
-        const created = doc[0];
-        if (!created) {
-          throw new Error('Création de document impossible');
-        }
-        docIds.push(created._id);
-      }
+      const docsPayload = documents.map((d) => ({
+        batchId: b._id,
+        title: d.title,
+        content: d.content,
+        status: 'pending' as const,
+      }));
+      const inserted = await DocumentModel.insertMany(docsPayload, { session });
+      const docIds = inserted.map((doc) => doc._id);
       b.documents = docIds;
       b.status = 'processing';
       await b.save({ session });
@@ -61,24 +49,27 @@ export async function createBatch(
         documentIds: docIds.map((id) => id.toHexString()),
       };
     });
-    logger.info('Lot créé, envoi des jobs', {
+    const log = logger.child({ batchId: result.batchId });
+    log.info('Lot créé, envoi des jobs', { count: result.documentIds.length });
+    const jobOptions = {
+      attempts: 3,
+      backoff: { type: 'exponential' as const, delay: 2000 },
+      removeOnComplete: true,
+      removeOnFail: false,
+    };
+    const payloads: PdfJobPayload[] = documents.map((d, i) => ({
+      documentId: result.documentIds[i] ?? '',
       batchId: result.batchId,
-      count: result.documentIds.length,
-    });
-    for (let i = 0; i < documents.length; i++) {
-      const payload: PdfJobPayload = {
-        documentId: result.documentIds[i] ?? '',
-        batchId: result.batchId,
-        title: documents[i]?.title ?? '',
-        content: documents[i]?.content ?? '',
-        correlationId,
-      };
-      await pdfQueue.add('generate', payload, {
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 2000 },
-        removeOnComplete: true,
-        removeOnFail: false,
-      });
+      title: d.title,
+      content: d.content,
+      correlationId,
+    }));
+    const enqueueChunkSize = 100;
+    for (let i = 0; i < payloads.length; i += enqueueChunkSize) {
+      const slice = payloads.slice(i, i + enqueueChunkSize);
+      await Promise.all(
+        slice.map((payload) => pdfQueue.add('generate', payload, jobOptions)),
+      );
     }
     return result;
   } finally {
@@ -110,7 +101,7 @@ export async function getBatchById(batchId: string, logger: Logger): Promise<Bat
   if (!batch) {
     throw new NotFoundError('Lot introuvable');
   }
-  logger.info('Consultation lot', { batchId });
+  logger.child({ batchId }).info('Consultation lot');
   const docs = await DocumentModel.find({ batchId: batch._id }).sort({ _id: 1 }).lean().exec();
   return {
     batchId: batch._id.toHexString(),

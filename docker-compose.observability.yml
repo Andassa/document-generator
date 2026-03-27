@@ -1,0 +1,33 @@
+# À lancer avec la stack applicative :
+#   docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d
+#
+# Prometheus : http://localhost:9090
+# Grafana    : http://localhost:3001 
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    ports:
+      - '9090:9090'
+    depends_on:
+      - api
+      - worker
+
+  grafana:
+    image: grafana/grafana:11.5.2
+    ports:
+      - '3001:3000'
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus

@@ -10,17 +10,18 @@ import { config } from './config';
 import { correlationMiddleware } from './api/middleware/correlation.middleware';
 import { metricsMiddleware } from './api/middleware/metrics.middleware';
 import { errorMiddleware } from './api/middleware/error.middleware';
-import { postBatch, getBatch } from './api/controllers/batch.controller';
+import { postBatch, postBatchByUserIds, getBatch } from './api/controllers/batch.controller';
 import { getDocumentPdf } from './api/controllers/document.controller';
 import { getHealth } from './api/controllers/health.controller';
 import { getMetrics } from './api/controllers/metrics.controller';
+import { getObservabilitySummary } from './api/controllers/observability.controller';
 
 export function createApp(): express.Application {
   const app = express();
   app.disable('x-powered-by');
   app.use(helmet());
   app.use(cors());
-  app.use(express.json({ limit: '2mb' }));
+  app.use(express.json({ limit: `${String(config.JSON_BODY_LIMIT_MB)}mb` }));
   app.use(correlationMiddleware);
   app.use(metricsMiddleware);
 
@@ -32,6 +33,7 @@ export function createApp(): express.Application {
     skip: (req) =>
       req.path === '/health' ||
       req.path === '/metrics' ||
+      req.path === '/observability' ||
       req.path === '/openapi.yaml' ||
       req.path.startsWith('/api-docs'),
     handler: (req, res) => {
@@ -45,6 +47,7 @@ export function createApp(): express.Application {
 
   app.get('/health', getHealth);
   app.get('/metrics', getMetrics);
+  app.get('/observability', getObservabilitySummary);
 
   const openapiPath = path.join(__dirname, '../docs/openapi.yaml');
   if (fs.existsSync(openapiPath)) {
@@ -55,6 +58,10 @@ export function createApp(): express.Application {
       res.sendFile(path.resolve(openapiPath));
     });
   }
+
+  app.post('/api/documents/batch', postBatchByUserIds);
+  app.get('/api/documents/batch/:batchId', getBatch);
+  app.get('/api/documents/:documentId', getDocumentPdf);
 
   app.post('/batch', postBatch);
   app.get('/batch/:id', getBatch);

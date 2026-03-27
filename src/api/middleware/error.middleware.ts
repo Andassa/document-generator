@@ -2,6 +2,27 @@ import type { Request, Response, NextFunction } from 'express';
 import { AppError } from '../../utils/errors';
 import { rootLogger } from '../../utils/logger';
 
+function getClientErrorStatus(err: unknown): number | undefined {
+  if (typeof err !== 'object' || err === null) {
+    return undefined;
+  }
+  const o = err as { status?: unknown; statusCode?: unknown };
+  const s = typeof o.status === 'number' ? o.status : undefined;
+  const sc = typeof o.statusCode === 'number' ? o.statusCode : undefined;
+  const code = s ?? sc;
+  if (code !== undefined && code >= 400 && code < 500) {
+    return code;
+  }
+  return undefined;
+}
+
+function isEntityParseFailed(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) {
+    return false;
+  }
+  return (err as { type?: string }).type === 'entity.parse.failed';
+}
+
 export function errorMiddleware(
   err: unknown,
   req: Request,
@@ -18,6 +39,20 @@ export function errorMiddleware(
       });
       res.status(err.statusCode).json({
         error: { message: err.message, code: err.code },
+      });
+      return;
+    }
+    const clientStatus = getClientErrorStatus(err);
+    if (clientStatus !== undefined) {
+      const message = err instanceof Error ? err.message : 'Requête invalide';
+      const code = isEntityParseFailed(err) ? 'INVALID_JSON' : 'CLIENT_ERROR';
+      logger.warn('Erreur requête client (middleware)', {
+        statusCode: clientStatus,
+        code,
+        message,
+      });
+      res.status(clientStatus).json({
+        error: { message, code },
       });
       return;
     }

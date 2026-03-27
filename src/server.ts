@@ -5,6 +5,8 @@ import { createApp } from './app';
 import { pdfQueue } from './queue/pdfQueue';
 import { rootLogger } from './utils/logger';
 import { shutdownGridFsCircuit } from './services/gridfs.service';
+import { startQueueSizePolling } from './utils/metrics';
+import { waitPdfQueueIdle } from './utils/queueShutdown';
 
 async function closeHttpServer(server: http.Server): Promise<void> {
   await new Promise<void>((resolve, reject) => {
@@ -21,11 +23,20 @@ async function closeHttpServer(server: http.Server): Promise<void> {
 async function main(): Promise<void> {
   try {
     await connectMongo();
+    if (config.QUEUE_BACKEND === 'memory') {
+      const { registerPdfWorkerProcessor } = await import('./workers/worker');
+      registerPdfWorkerProcessor();
+      rootLogger.warn(
+        'QUEUE_BACKEND=memory : file PDF en mémoire dans ce processus — ne lancez pas worker-entry séparément.',
+      );
+    }
     const app = createApp();
     const server = http.createServer(app);
     server.listen(config.PORT, () => {
       rootLogger.info('Serveur HTTP à l’écoute', { port: config.PORT });
     });
+
+    const stopQueuePolling = startQueueSizePolling(pdfQueue, config.QUEUE_METRICS_POLL_MS);
 
     let shuttingDown = false;
     const shutdown = async (signal: string): Promise<void> => {
@@ -35,11 +46,47 @@ async function main(): Promise<void> {
       shuttingDown = true;
       rootLogger.info('Signal reçu, arrêt gracieux', { signal });
       try {
+        stopQueuePolling();
+      } catch (err) {
+        rootLogger.warn('Erreur arrêt polling queue_size', {
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+      try {
         await closeHttpServer(server);
       } catch (err) {
         rootLogger.warn('Erreur fermeture HTTP', {
           err: err instanceof Error ? err.message : String(err),
         });
+      }
+      try {
+        await waitPdfQueueIdle(
+          pdfQueue,
+          config.GRACEFUL_SHUTDOWN_ACTIVE_JOBS_TIMEOUT_MS,
+          rootLogger,
+        );
+      } catch (err) {
+        rootLogger.warn('Erreur attente file PDF avant fermeture', {
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+      if (config.QUEUE_BACKEND === 'memory') {
+        try {
+          const { shutdownDocuSignCircuit } = await import('./services/docusignSimulated.service');
+          await shutdownDocuSignCircuit();
+        } catch (err) {
+          rootLogger.warn('Erreur shutdown circuit DocuSign simulé', {
+            err: err instanceof Error ? err.message : String(err),
+          });
+        }
+        try {
+          const { shutdownPdfThreadPool } = await import('./services/pdfThreadPool');
+          await shutdownPdfThreadPool();
+        } catch (err) {
+          rootLogger.warn('Erreur fermeture pool threads PDF (API)', {
+            err: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
       try {
         await pdfQueue.close();

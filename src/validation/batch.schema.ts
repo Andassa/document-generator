@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { config } from '../config';
 
 export const createBatchSchema = z.object({
   documents: z
@@ -9,7 +10,16 @@ export const createBatchSchema = z.object({
       }),
     )
     .min(1)
-    .max(50),
+    .max(config.BATCH_MAX_DOCUMENTS),
+});
+
+
+export const createBatchUserIdsSchema = z.object({
+  userIds: z
+    .array(z.string().min(1).max(256))
+    .min(1)
+    .max(config.BATCH_MAX_DOCUMENTS),
 });
 
 export type CreateBatchBody = z.infer<typeof createBatchSchema>;
+export type CreateBatchUserIdsBody = z.infer<typeof createBatchUserIdsSchema>;

@@ -2,7 +2,16 @@ openapi: 3.0.3
 info:
   title: Document Generator API
   description: |
-    API de génération de PDF par lots (Bull, GridFS, worker threads).
+    API de génération de PDF par lots : file d’attente asynchrone (**Bull** sur Redis, ou file en mémoire
+    `QUEUE_BACKEND=memory`), stockage binaire **GridFS** (MongoDB), génération CPU dans des **worker threads**,
+    disjoncteurs **Opossum** (GridFS, DocuSign simulé), logs **JSON** (corrélation `x-correlation-id`, `batchId`, `documentId`)
+    et métriques **Prometheus**.
+
+    **Swagger UI** : `/api-docs` — spécification source : `docs/openapi.yaml`.
+
+    **Tests de l’API** : collection Postman `postman/document-generator.collection.json` (`baseUrl`, `workerMetricsUrl`).
+
+    **Courbes de benchmark** : à la racine du dépôt, `benchmark-series-excel-fr-avecgraph.xlsx` (graphiques sur séries de charge).
   version: 1.0.0
 servers:
   - url: http://localhost:3000
@@ -13,6 +22,125 @@ tags:
   - name: monitoring
     description: Santé et métriques
 paths:
+  /api/documents/batch:
+    post:
+      tags: [documents]
+      summary: Créer un lot à partir d’identifiants utilisateur (sujet Test 24h)
+      operationId: createBatchByUserIds
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBatchUserIdsRequest'
+            examples:
+              sample:
+                value:
+                  userIds: ["user-001", "user-002"]
+      responses:
+        '202':
+          description: Lot accepté pour traitement asynchrone
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateBatchResponse'
+              examples:
+                accepted:
+                  summary: Deux documents dérivés de userIds
+                  value:
+                    batchId: 65f0c4e2b8a1c2d3e4f5a6b7
+                    documentIds:
+                      - 65f0c4e2b8a1c2d3e4f5a6b8
+                      - 65f0c4e2b8a1c2d3e4f5a6b9
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/documents/batch/{batchId}:
+    get:
+      tags: [documents]
+      summary: Consulter l’état d’un lot (chemin sujet)
+      operationId: getBatchApi
+      parameters:
+        - name: batchId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+          example: "65f0c4e2b8a1c2d3e4f5a6b7"
+      responses:
+        '200':
+          description: Détails du lot et des documents
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchDetails'
+              examples:
+                processing:
+                  summary: Lot en traitement
+                  value:
+                    batchId: 65f0c4e2b8a1c2d3e4f5a6b7
+                    status: processing
+                    createdAt: '2025-03-27T10:00:00.000Z'
+                    updatedAt: '2025-03-27T10:00:05.000Z'
+                    documents:
+                      - documentId: 65f0c4e2b8a1c2d3e4f5a6b8
+                        title: Document — user-001
+                        status: completed
+                        gridFsFileId: 65f0c4e2b8a1c2d3e4f5a6c0
+                      - documentId: 65f0c4e2b8a1c2d3e4f5a6b9
+                        title: Document — user-002
+                        status: processing
+                completed:
+                  summary: Lot terminé
+                  value:
+                    batchId: 65f0c4e2b8a1c2d3e4f5a6b7
+                    status: completed
+                    createdAt: '2025-03-27T10:00:00.000Z'
+                    updatedAt: '2025-03-27T10:02:00.000Z'
+                    documents:
+                      - documentId: 65f0c4e2b8a1c2d3e4f5a6b8
+                        title: Rapport Q1
+                        status: completed
+                        gridFsFileId: 65f0c4e2b8a1c2d3e4f5a6c0
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/documents/{documentId}:
+    get:
+      tags: [documents]
+      summary: Télécharger le PDF (chemin sujet)
+      operationId: getDocumentPdfApi
+      parameters:
+        - name: documentId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+          example: "65f0c4e2b8a1c2d3e4f5a6b8"
+      responses:
+        '200':
+          description: Flux binaire PDF
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
   /batch:
     post:
       tags: [documents]
@@ -26,10 +154,19 @@ paths:
               $ref: '#/components/schemas/CreateBatchRequest'
             examples:
               sample:
+                summary: Un document
                 value:
                   documents:
-                    - title: "Rapport Q1"
-                      content: "Contenu du rapport..."
+                    - title: Rapport Q1
+                      content: "Contenu du rapport avec données et conclusion."
+              multi:
+                summary: Plusieurs documents
+                value:
+                  documents:
+                    - title: Note A
+                      content: "Texte court."
+                    - title: Note B
+                      content: "Autre contenu (max 200k caractères par document)."
       responses:
         '202':
           description: Lot accepté pour traitement asynchrone
@@ -39,10 +176,19 @@ paths:
                 $ref: '#/components/schemas/CreateBatchResponse'
               examples:
                 sample:
+                  summary: Réponse type
                   value:
-                    batchId: "65f0c4e2b8a1c2d3e4f5a6b7"
+                    batchId: 65f0c4e2b8a1c2d3e4f5a6b7
                     documentIds:
-                      - "65f0c4e2b8a1c2d3e4f5a6b8"
+                      - 65f0c4e2b8a1c2d3e4f5a6b8
+                multi:
+                  summary: Plusieurs IDs créés
+                  value:
+                    batchId: 65f0c4e2b8a1c2d3e4f5a6b7
+                    documentIds:
+                      - 65f0c4e2b8a1c2d3e4f5a6b8
+                      - 65f0c4e2b8a1c2d3e4f5a6b9
+                      - 65f0c4e2b8a1c2d3e4f5a6ba
         '400':
           $ref: '#/components/responses/BadRequest'
         '429':
@@ -69,6 +215,23 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BatchDetails'
+              examples:
+                partial_failure:
+                  summary: Lot partiel (certains PDF en échec)
+                  value:
+                    batchId: 65f0c4e2b8a1c2d3e4f5a6b7
+                    status: partial
+                    createdAt: '2025-03-27T10:00:00.000Z'
+                    updatedAt: '2025-03-27T10:05:00.000Z'
+                    documents:
+                      - documentId: 65f0c4e2b8a1c2d3e4f5a6b8
+                        title: OK
+                        status: completed
+                        gridFsFileId: 65f0c4e2b8a1c2d3e4f5a6c0
+                      - documentId: 65f0c4e2b8a1c2d3e4f5a6b9
+                        title: KO
+                        status: failed
+                        errorMessage: "Génération PDF : délai de 5000 ms dépassé"
         '404':
           $ref: '#/components/responses/NotFound'
         '429':
@@ -109,7 +272,7 @@ paths:
   /health:
     get:
       tags: [monitoring]
-      summary: Vérifier la disponibilité (MongoDB + Redis)
+      summary: Vérifier la disponibilité (MongoDB, Redis si file Redis, état de la file)
       operationId: getHealth
       responses:
         '200':
@@ -118,12 +281,84 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HealthOk'
+              examples:
+                ok_redis:
+                  summary: Mongo + Redis + file OK
+                  value:
+                    status: ok
+                    mongo: true
+                    redis: true
+                    queue:
+                      ok: true
+                      backend: redis
+                      waiting: 3
+                      active: 2
+                ok_memory:
+                  summary: File en mémoire (Redis non requis pour la file)
+                  value:
+                    status: ok
+                    mongo: true
+                    redis: true
+                    queue:
+                      ok: true
+                      backend: memory
+                      waiting: 0
+                      active: 1
         '503':
           description: Au moins une dépendance est indisponible
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/HealthDegraded'
+              examples:
+                redis_down:
+                  summary: Redis injoignable (mode file Redis)
+                  value:
+                    status: degraded
+                    mongo: true
+                    redis: false
+                    queue:
+                      ok: true
+                      backend: redis
+                      waiting: 0
+                      active: 0
+                queue_unreachable:
+                  summary: Impossible de lire la file
+                  value:
+                    status: degraded
+                    mongo: true
+                    redis: true
+                    queue:
+                      ok: false
+                      backend: redis
+                      error: 'ECONNREFUSED'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /observability:
+    get:
+      tags: [monitoring]
+      summary: Résumé texte des métriques clés + rappels PromQL
+      description: |
+        Valeurs lues dans le registre Prometheus **du processus qui répond** (souvent l’API).
+        Pour les compteurs PDF, scraper aussi le `/metrics` du worker. Voir aussi le dossier `observability/` (Grafana).
+      operationId: getObservabilitySummary
+      responses:
+        '200':
+          description: Texte brut (commentaires `#` et lignes clé/valeur)
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: |
+                  # Observabilité — instantané (registre Prometheus de ce processus)
+
+                  # Métriques clés (sujet)
+                  documents_generated_total 0
+                  queue_size 2
+                  batch_processing_duration_seconds_count 5
+                  batch_processing_duration_seconds_sum_seconds 42.5
         '429':
           $ref: '#/components/responses/TooManyRequests'
         '500':
@@ -132,6 +367,10 @@ paths:
     get:
       tags: [monitoring]
       summary: Métriques Prometheus
+      description: |
+        Inclut notamment `http_requests_total`, `queue_size`, et les métriques Node par défaut.
+        Le processus **worker** expose le même format sur un port dédié (défaut 9464, variable `WORKER_METRICS_PORT`) :
+        PDF (`documents_generated_total`, `pdf_jobs_processed_total`, …), `batch_processing_duration_seconds`, etc.
       operationId: getMetrics
       responses:
         '200':
@@ -140,20 +379,52 @@ paths:
             text/plain:
               schema:
                 type: string
+                example: |
+                  # HELP documents_generated_total Documents PDF générés avec succès
+                  # TYPE documents_generated_total counter
+                  documents_generated_total 128
+                  # HELP queue_size Profondeur file Bull (waiting + active + delayed)
+                  # TYPE queue_size gauge
+                  queue_size 4
+                  # HELP batch_processing_duration_seconds Durée du lot jusqu’à statut terminal
+                  # TYPE batch_processing_duration_seconds histogram
+                  batch_processing_duration_seconds_bucket{le="10",outcome="completed"} 12
+                  batch_processing_duration_seconds_sum{outcome="completed"} 96.4
+                  batch_processing_duration_seconds_count{outcome="completed"} 12
         '429':
           $ref: '#/components/responses/TooManyRequests'
         '500':
           $ref: '#/components/responses/InternalError'
 components:
   schemas:
+    CreateBatchUserIdsRequest:
+      type: object
+      example:
+        userIds: [user-001, user-002, user-003]
+      required: [userIds]
+      properties:
+        userIds:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          description: Taille max configurable (BATCH_MAX_DOCUMENTS, plafond 5000).
+          items:
+            type: string
+            minLength: 1
+            maxLength: 256
     CreateBatchRequest:
       type: object
+      example:
+        documents:
+          - title: Contrat type
+            content: "Les parties conviennent des conditions suivantes…"
       required: [documents]
       properties:
         documents:
           type: array
           minItems: 1
-          maxItems: 50
+          maxItems: 1000
+          description: Taille max configurable côté serveur (défaut 1000, variable BATCH_MAX_DOCUMENTS, plafond 5000).
           items:
             type: object
             required: [title, content]
@@ -222,6 +493,9 @@ components:
         redis:
           type: boolean
           example: true
+          description: Toujours true si QUEUE_BACKEND=memory (Redis non utilisé pour la file).
+        queue:
+          $ref: '#/components/schemas/HealthQueue'
     HealthDegraded:
       type: object
       properties:
@@ -232,16 +506,40 @@ components:
           type: boolean
         redis:
           type: boolean
+        queue:
+          $ref: '#/components/schemas/HealthQueue'
+    HealthQueue:
+      type: object
+      required: [ok, backend]
+      properties:
+        ok:
+          type: boolean
+          description: true si getJobCounts a réussi sur la file Bull ou la file mémoire.
+        backend:
+          type: string
+          enum: [redis, memory]
+        waiting:
+          type: integer
+        active:
+          type: integer
+        error:
+          type: string
     ErrorBody:
       type: object
+      example:
+        error:
+          message: Description lisible de l’erreur
+          code: VALIDATION_ERROR
       properties:
         error:
           type: object
           properties:
             message:
               type: string
+              example: Array must contain at least 1 element(s)
             code:
               type: string
+              example: VALIDATION_ERROR
   responses:
     BadRequest:
       description: Requête invalide

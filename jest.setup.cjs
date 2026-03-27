@@ -11,3 +11,5 @@ process.env.CIRCUIT_RESET_TIMEOUT_MS = '10000';
 process.env.CIRCUIT_VOLUME_THRESHOLD = '3';
 process.env.RATE_LIMIT_WINDOW_MS = '60000';
 process.env.RATE_LIMIT_MAX = '1000';
+process.env.BATCH_MAX_DOCUMENTS = process.env.BATCH_MAX_DOCUMENTS || '1000';
+process.env.JSON_BODY_LIMIT_MB = process.env.JSON_BODY_LIMIT_MB || '32';

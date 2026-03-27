@@ -1,26 +1,12 @@
 import { once } from 'node:events';
-import { Worker } from 'worker_threads';
-import path from 'path';
 import type { GridFSBucketWriteStream } from 'mongodb';
 import { ObjectId } from 'mongodb';
+import { config } from '../config';
 import { getGridFsBucket } from './gridfs.service';
+import { getPdfThreadPool } from './pdfThreadPool';
 import type { PdfJobPayload, PdfWorkerParentMessage, PdfWorkerStartMessage } from '../types/pdf';
 import { pdfWorkerChunksTotal } from '../utils/metrics';
 import type { Logger } from 'winston';
-
-function resolveWorkerScriptPath(): string {
-  const useJs = process.env.NODE_ENV === 'production';
-  return path.join(__dirname, '..', 'workers', useJs ? 'pdf.worker.js' : 'pdf.worker.ts');
-}
-
-function workerOptionsForPath(scriptPath: string): ConstructorParameters<typeof Worker>[1] {
-  if (scriptPath.endsWith('.ts')) {
-    return {
-      execArgv: [...process.execArgv, '-r', 'ts-node/register/transpile-only'],
-    };
-  }
-  return { execArgv: process.execArgv };
-}
 
 function writeWithDrain(stream: GridFSBucketWriteStream, buf: Buffer): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -50,48 +36,62 @@ export async function streamPdfFromWorkerToGridFS(
       correlationId: job.correlationId,
     },
   });
-  const scriptPath = resolveWorkerScriptPath();
-  const worker = new Worker(scriptPath, workerOptionsForPath(scriptPath));
-  logger.info('Worker PDF démarré', { scriptPath, documentId: job.documentId });
+
+  const pool = getPdfThreadPool();
+  const worker = await pool.acquire();
+  logger.info('Worker PDF (pool) pris', { documentId: job.documentId });
+
+  const timeoutMs = config.PDF_GENERATION_TIMEOUT_MS;
 
   return await new Promise<ObjectId>((resolve, reject) => {
     let settled = false;
     let chain: Promise<void> = Promise.resolve();
+    let timer: NodeJS.Timeout | undefined;
 
-    const fail = (err: Error): void => {
-      if (settled) {
-        return;
+    const clearTimer = (): void => {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
       }
-      settled = true;
-      void worker.terminate().catch(() => undefined);
-      uploadStream.destroy(err);
-      reject(err);
     };
 
-    const succeed = (id: ObjectId): void => {
+    const detachWorkerListeners = (): void => {
+      worker.removeListener('message', onWorkerMessage);
+      worker.removeListener('error', onWorkerError);
+      worker.removeListener('exit', onWorkerExit);
+    };
+
+    const rejectOnce = (err: Error): void => {
       if (settled) {
         return;
       }
       settled = true;
-      void worker.terminate().catch(() => undefined);
+      clearTimer();
+      detachWorkerListeners();
+      uploadStream.destroy(err);
+      void pool.discard(worker).then(() => {
+        reject(err);
+      });
+    };
+
+    const resolveOnce = (id: ObjectId): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimer();
+      detachWorkerListeners();
+      pool.release(worker);
       resolve(id);
     };
 
-    uploadStream.on('error', (err: Error) => {
-      logger.error('Erreur upload GridFS', { err });
-      fail(err);
-    });
-    worker.on('error', (err: Error) => {
-      logger.error('Erreur thread PDF', { err });
-      fail(err);
-    });
-    worker.on('exit', (code) => {
-      if (!settled && code !== 0) {
-        fail(new Error(`Worker PDF terminé avec le code ${String(code)}`));
-      }
-    });
+    timer = setTimeout(() => {
+      rejectOnce(
+        new Error(`Génération PDF : délai de ${String(timeoutMs)} ms dépassé`),
+      );
+    }, timeoutMs);
 
-    worker.on('message', (raw: unknown) => {
+    const onWorkerMessage = (raw: unknown): void => {
       const msg = raw as PdfWorkerParentMessage;
       chain = chain
         .then(async () => {
@@ -115,14 +115,33 @@ export async function streamPdfFromWorkerToGridFS(
               gridFsFileId: id.toHexString(),
               byteLength: msg.byteLength,
             });
-            succeed(id as ObjectId);
+            resolveOnce(id as ObjectId);
           }
         })
         .catch((err: unknown) => {
           const e = err instanceof Error ? err : new Error(String(err));
-          fail(e);
+          rejectOnce(e);
         });
+    };
+
+    const onWorkerError = (err: Error): void => {
+      logger.error('Erreur thread PDF', { err });
+      rejectOnce(err);
+    };
+
+    const onWorkerExit = (code: number): void => {
+      if (!settled && code !== 0) {
+        rejectOnce(new Error(`Worker PDF terminé avec le code ${String(code)}`));
+      }
+    };
+
+    uploadStream.on('error', (err: Error) => {
+      logger.error('Erreur upload GridFS', { err });
+      rejectOnce(err);
     });
+    worker.on('message', onWorkerMessage);
+    worker.on('error', onWorkerError);
+    worker.on('exit', onWorkerExit);
 
     const start: PdfWorkerStartMessage = {
       type: 'start',

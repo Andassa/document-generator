@@ -9,8 +9,10 @@ if (!parentPort) {
 
 const port = parentPort;
 
-port.on('message', (raw: unknown) => {
-  void runPdf(raw);
+/** Options PDF « compilées » une fois : réutilisées pour chaque document (pool de threads). */
+const PDF_DOCUMENT_TEMPLATE = Object.freeze({
+  margin: 50,
+  size: 'A4' as const,
 });
 
 function isStartMessage(raw: unknown): raw is PdfWorkerStartMessage {
@@ -28,7 +30,10 @@ async function runPdf(raw: unknown): Promise<void> {
       return;
     }
     const msg = raw;
-    const doc = new PDFDocument({ margin: 50 });
+    const doc = new PDFDocument({
+      margin: PDF_DOCUMENT_TEMPLATE.margin,
+      size: PDF_DOCUMENT_TEMPLATE.size,
+    });
     doc.fontSize(18).text(msg.title, { underline: true });
     doc.moveDown();
     doc.fontSize(11).text(msg.content, { align: 'left' });
@@ -46,3 +51,9 @@ async function runPdf(raw: unknown): Promise<void> {
     port.postMessage({ type: 'error', message });
   }
 }
+
+/** Traitement séquentiel des jobs sur ce thread (évite chevauchement si messages rapides). */
+let jobChain = Promise.resolve();
+port.on('message', (raw: unknown) => {
+  jobChain = jobChain.then(() => runPdf(raw));
+});

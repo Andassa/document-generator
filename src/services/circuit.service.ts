@@ -18,7 +18,7 @@ export function createMongoCircuit<T extends unknown[], R>(
 
   const syncGauge = (): void => {
     const s = breaker.opened ? 1 : breaker.halfOpen ? 2 : 0;
-    circuitBreakerState.set(s);
+    circuitBreakerState.labels({ name }).set(s);
   };
 
   breaker.on('open', () => {

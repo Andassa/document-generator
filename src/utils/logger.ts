@@ -10,10 +10,26 @@ const baseFormat = winston.format.combine(
 export const rootLogger = winston.createLogger({
   level: config.LOG_LEVEL,
   format: baseFormat,
-  defaultMeta: { service: 'document-generator' },
+  defaultMeta: { service: 'document-generator', environment: config.NODE_ENV },
   transports: [new winston.transports.Console()],
 });
 
-export function createChildLogger(correlationId: string): winston.Logger {
-  return rootLogger.child({ correlationId });
+/** Champs toujours présents dans les lignes JSON (observabilité / corrélation métier). */
+export interface LogBusinessContext {
+  batchId?: string;
+  documentId?: string;
+}
+
+export function createChildLogger(
+  correlationId: string,
+  ctx: LogBusinessContext = {},
+): winston.Logger {
+  const meta: Record<string, string> = { correlationId };
+  if (ctx.batchId !== undefined) {
+    meta.batchId = ctx.batchId;
+  }
+  if (ctx.documentId !== undefined) {
+    meta.documentId = ctx.documentId;
+  }
+  return rootLogger.child(meta);
 }

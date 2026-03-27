@@ -10,5 +10,6 @@ export const getHealth = catchAsync(async (req: Request, res: Response): Promise
     status: report.ok ? 'ok' : 'degraded',
     mongo: report.mongo,
     redis: report.redis,
+    queue: report.queue,
   });
 });

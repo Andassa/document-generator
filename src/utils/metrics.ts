@@ -6,6 +6,15 @@ import {
   Gauge,
 } from 'prom-client';
 
+/** Évite d’importer le type `Queue` de bull (namespace vs valeur selon @types). */
+export type BullQueueForMetrics = {
+  getJobCounts(): Promise<{
+    waiting: number;
+    active: number;
+    delayed: number;
+  }>;
+};
+
 export const registry = new Registry();
 collectDefaultMetrics({ register: registry });
 
@@ -48,6 +57,7 @@ export const pdfWorkerChunksTotal = new Counter({
 export const circuitBreakerState = new Gauge({
   name: 'circuit_breaker_state',
   help: 'État du disjoncteur (0=closed, 1=open, 2=halfOpen)',
+  labelNames: ['name'],
   registers: [registry],
 });
 
@@ -56,3 +66,38 @@ export const activeBullJobs = new Gauge({
   help: 'Jobs Bull actifs',
   registers: [registry],
 });
+
+/** Noms alignés sujet « Test 24h » */
+export const documentsGeneratedTotal = new Counter({
+  name: 'documents_generated_total',
+  help: 'Documents PDF générés avec succès',
+  registers: [registry],
+});
+
+export const batchProcessingDurationSeconds = new Histogram({
+  name: 'batch_processing_duration_seconds',
+  help: 'Durée du lot jusqu’à statut terminal (createdAt → completed|failed|partial)',
+  labelNames: ['outcome'],
+  buckets: [0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600, 1800, 3600],
+  registers: [registry],
+});
+
+export const queueSize = new Gauge({
+  name: 'queue_size',
+  help: 'Profondeur file Bull (waiting + active + delayed)',
+  registers: [registry],
+});
+
+export function startQueueSizePolling(queue: BullQueueForMetrics, intervalMs: number): () => void {
+  const tick = (): void => {
+    void queue
+      .getJobCounts()
+      .then((c: { waiting: number; active: number; delayed: number }) => {
+        queueSize.set(c.waiting + c.active + c.delayed);
+      })
+      .catch(() => undefined);
+  };
+  tick();
+  const id = setInterval(tick, intervalMs);
+  return () => clearInterval(id);
+}

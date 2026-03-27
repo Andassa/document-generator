@@ -32,6 +32,7 @@ services:
       LOG_LEVEL: info
       MONGODB_URI: mongodb://mongo:27017/document-generator
       REDIS_URL: redis://redis:6379
+      WORKER_METRICS_PORT: 0
     depends_on:
       mongo:
         condition: service_healthy
@@ -41,11 +42,14 @@ services:
   worker:
     build: .
     command: node dist/worker-entry.js
+    ports:
+      - '9464:9464'
     environment:
       NODE_ENV: production
       LOG_LEVEL: info
       MONGODB_URI: mongodb://mongo:27017/document-generator
       REDIS_URL: redis://redis:6379
+      WORKER_METRICS_PORT: 9464
     depends_on:
       mongo:
         condition: service_healthy

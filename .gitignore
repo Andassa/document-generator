@@ -3,4 +3,7 @@ dist
 .env
 coverage
 *.log
+test-output.pdf
+benchmark-report.json
+benchmark-series.csv
 .DS_Store

@@ -10,7 +10,9 @@
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
     "dev:worker": "ts-node-dev --respawn --transpile-only src/worker-entry.ts",
     "test": "jest --runInBand",
-    "lint": "eslint \"src/**/*.ts\""
+    "lint": "eslint \"src/**/*.ts\"",
+    "benchmark:batch": "node scripts/benchmark-batch.mjs",
+    "benchmark:csv-excel-fr": "node scripts/benchmark-csv-for-excel-fr.mjs"
   },
   "keywords": [],
   "author": "",

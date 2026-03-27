@@ -23,5 +23,10 @@ export async function streamDocumentPdf(
   if (doc.status === 'failed' || !doc.gridFsFileId) {
     throw new NotFoundError('PDF non disponible pour ce document');
   }
-  await pipeGridFsFileToResponse(doc.gridFsFileId, res, logger);
+  const log = logger.child({
+    documentId: doc._id.toHexString(),
+    batchId: doc.batchId.toHexString(),
+  });
+  log.info('Téléchargement PDF', { status: doc.status });
+  await pipeGridFsFileToResponse(doc.gridFsFileId, res, log);
 }
