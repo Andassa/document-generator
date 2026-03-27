@@ -1,0 +1,295 @@
+openapi: 3.0.3
+info:
+  title: Document Generator API
+  description: |
+    API de génération de PDF par lots (Bull, GridFS, worker threads).
+  version: 1.0.0
+servers:
+  - url: http://localhost:3000
+    description: Développement local
+tags:
+  - name: documents
+    description: Création et consultation des lots et PDF
+  - name: monitoring
+    description: Santé et métriques
+paths:
+  /batch:
+    post:
+      tags: [documents]
+      summary: Créer un lot de documents PDF
+      operationId: createBatch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBatchRequest'
+            examples:
+              sample:
+                value:
+                  documents:
+                    - title: "Rapport Q1"
+                      content: "Contenu du rapport..."
+      responses:
+        '202':
+          description: Lot accepté pour traitement asynchrone
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateBatchResponse'
+              examples:
+                sample:
+                  value:
+                    batchId: "65f0c4e2b8a1c2d3e4f5a6b7"
+                    documentIds:
+                      - "65f0c4e2b8a1c2d3e4f5a6b8"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /batch/{id}:
+    get:
+      tags: [documents]
+      summary: Consulter l’état d’un lot
+      operationId: getBatch
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+          example: "65f0c4e2b8a1c2d3e4f5a6b7"
+      responses:
+        '200':
+          description: Détails du lot et des documents
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchDetails'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /{documentId}:
+    get:
+      tags: [documents]
+      summary: Télécharger le PDF d’un document
+      description: |
+        Identifiant MongoDB (24 caractères hex). Retourne le flux PDF une fois le document `completed`.
+      operationId: getDocumentPdf
+      parameters:
+        - name: documentId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+          example: "65f0c4e2b8a1c2d3e4f5a6b8"
+      responses:
+        '200':
+          description: Flux binaire PDF
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /health:
+    get:
+      tags: [monitoring]
+      summary: Vérifier la disponibilité (MongoDB + Redis)
+      operationId: getHealth
+      responses:
+        '200':
+          description: Tous les contrôles sont OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthOk'
+        '503':
+          description: Au moins une dépendance est indisponible
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthDegraded'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /metrics:
+    get:
+      tags: [monitoring]
+      summary: Métriques Prometheus
+      operationId: getMetrics
+      responses:
+        '200':
+          description: Exposition au format Prometheus / OpenMetrics
+          content:
+            text/plain:
+              schema:
+                type: string
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+components:
+  schemas:
+    CreateBatchRequest:
+      type: object
+      required: [documents]
+      properties:
+        documents:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items:
+            type: object
+            required: [title, content]
+            properties:
+              title:
+                type: string
+                maxLength: 500
+              content:
+                type: string
+                maxLength: 200000
+    CreateBatchResponse:
+      type: object
+      required: [batchId, documentIds]
+      properties:
+        batchId:
+          type: string
+          example: "65f0c4e2b8a1c2d3e4f5a6b7"
+        documentIds:
+          type: array
+          items:
+            type: string
+    DocumentStatusItem:
+      type: object
+      properties:
+        documentId:
+          type: string
+        title:
+          type: string
+        status:
+          type: string
+          enum: [pending, processing, completed, failed]
+        gridFsFileId:
+          type: string
+          nullable: true
+        errorMessage:
+          type: string
+          nullable: true
+    BatchDetails:
+      type: object
+      required: [batchId, status, createdAt, updatedAt, documents]
+      properties:
+        batchId:
+          type: string
+        status:
+          type: string
+          enum: [pending, processing, completed, failed, partial]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        documents:
+          type: array
+          items:
+            $ref: '#/components/schemas/DocumentStatusItem'
+    HealthOk:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+        mongo:
+          type: boolean
+          example: true
+        redis:
+          type: boolean
+          example: true
+    HealthDegraded:
+      type: object
+      properties:
+        status:
+          type: string
+          example: degraded
+        mongo:
+          type: boolean
+        redis:
+          type: boolean
+    ErrorBody:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            message:
+              type: string
+            code:
+              type: string
+  responses:
+    BadRequest:
+      description: Requête invalide
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorBody'
+          example:
+            error:
+              message: "Array must contain at least 1 element(s)"
+              code: VALIDATION_ERROR
+    NotFound:
+      description: Ressource introuvable
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorBody'
+          example:
+            error:
+              message: "Lot introuvable"
+              code: NOT_FOUND
+    Conflict:
+      description: Conflit d’état (ex. PDF pas encore prêt)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorBody'
+          example:
+            error:
+              message: "Le document est encore en cours de génération"
+              code: CONFLICT
+    TooManyRequests:
+      description: Limite de débit
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorBody'
+          example:
+            error:
+              message: "Trop de requêtes"
+              code: RATE_LIMIT
+    InternalError:
+      description: Erreur serveur
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorBody'
+          example:
+            error:
+              message: "Erreur interne du serveur"
+              code: INTERNAL_ERROR

@@ -1,0 +1,190 @@
+{
+  "info": {
+    "_postman_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "name": "Document Generator",
+    "description": "Collection v2.1 — API document-generator (5 requêtes).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:3000" },
+    { "key": "batchId", "value": "" },
+    { "key": "documentId", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/health"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "pm.request.headers.upsert({ key: 'x-correlation-id', value: pm.variables.replaceIn('{{$guid}}') });"
+            ],
+            "type": "text/javascript"
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status 200 ou 503', function () {",
+              "  pm.expect([200, 503]).to.include(pm.response.code);",
+              "});",
+              "pm.test('Corps JSON', function () {",
+              "  pm.response.to.be.json;",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Metrics",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/metrics"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "if (!pm.collectionVariables.get('baseUrl')) {",
+              "  pm.collectionVariables.set('baseUrl', 'http://localhost:3000');",
+              "}"
+            ],
+            "type": "text/javascript"
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status 200', function () {",
+              "  pm.response.to.have.status(200);",
+              "});",
+              "pm.test('Corps non vide', function () {",
+              "  pm.expect(pm.response.text().length).to.be.above(0);",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Create batch",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"documents\": [\n    {\n      \"title\": \"Exemple Postman\",\n      \"content\": \"Texte du PDF généré.\"\n    }\n  ]\n}"
+        },
+        "url": "{{baseUrl}}/batch"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "pm.collectionVariables.set('batchId', '');",
+              "pm.collectionVariables.set('documentId', '');",
+              "pm.request.headers.upsert({ key: 'x-correlation-id', value: pm.variables.replaceIn('{{$guid}}') });"
+            ],
+            "type": "text/javascript"
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status 202', function () {",
+              "  pm.response.to.have.status(202);",
+              "});",
+              "const j = pm.response.json();",
+              "pm.test('batchId et documentIds', function () {",
+              "  pm.expect(j.batchId).to.be.a('string');",
+              "  pm.expect(j.documentIds).to.be.an('array').that.is.not.empty;",
+              "});",
+              "if (pm.response.code === 202 && j.batchId && j.documentIds && j.documentIds[0]) {",
+              "  pm.collectionVariables.set('batchId', j.batchId);",
+              "  pm.collectionVariables.set('documentId', j.documentIds[0]);",
+              "}"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Get batch",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/batch/{{batchId}}"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "const id = pm.collectionVariables.get('batchId');",
+              "if (!id) { console.warn('Exécuter d’abord Create batch pour définir batchId'); }"
+            ],
+            "type": "text/javascript"
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status 200 ou 404', function () {",
+              "  pm.expect([200, 404]).to.include(pm.response.code);",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Get document PDF",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/{{documentId}}"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "const id = pm.collectionVariables.get('documentId');",
+              "if (!id) { console.warn('Exécuter d’abord Create batch pour définir documentId'); }"
+            ],
+            "type": "text/javascript"
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status attendu (200 PDF, 409 en cours, 404 sinon)', function () {",
+              "  pm.expect([200, 404, 409]).to.include(pm.response.code);",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+process.env.NODE_ENV = 'test';
+process.env.LOG_LEVEL = 'error';
+process.env.MONGODB_URI = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/document-generator-test';
+process.env.REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
+process.env.BULL_QUEUE_NAME = 'document-pdf-test';
+process.env.PDF_WORKER_CONCURRENCY = '1';
+process.env.GRIDFS_BUCKET_NAME = 'pdfs-test';
+process.env.CIRCUIT_TIMEOUT_MS = '5000';
+process.env.CIRCUIT_ERROR_THRESHOLD_PERCENTAGE = '50';
+process.env.CIRCUIT_RESET_TIMEOUT_MS = '10000';
+process.env.CIRCUIT_VOLUME_THRESHOLD = '3';
+process.env.RATE_LIMIT_WINDOW_MS = '60000';
+process.env.RATE_LIMIT_MAX = '1000';
